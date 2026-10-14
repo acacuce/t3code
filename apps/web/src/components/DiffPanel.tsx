@@ -33,6 +33,7 @@ import { cn } from "~/lib/utils";
 import { selectThreadDiffPanelSelection, useDiffPanelStore } from "../diffPanelStore";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useTheme } from "../hooks/useTheme";
+import { useDelayedStatus } from "../hooks/useDelayedStatus";
 import {
   buildFileDiffContentVersion,
   buildFileDiffIdentityKey,
@@ -57,6 +58,7 @@ import { AnnotatableCodeView, type AnnotatableCodeViewHandle } from "./diffs/Ann
 import { DiffFileTree } from "./diffs/DiffFileTree";
 import { diffFileTreeEntries } from "./diffs/diffFileTree.logic";
 import { Button } from "./ui/button";
+import { Spinner } from "./ui/spinner";
 import { MorphIcon } from "~/components/MorphIcon";
 import { ToggleGroup, Toggle } from "./ui/toggle-group";
 import { Switch } from "./ui/switch";
@@ -125,6 +127,8 @@ function DiffFileCollapseToggle({
   fileKey,
   collapsed,
   unavailable,
+  requestIndex,
+  onRequest,
   iconClassName,
   onToggle,
 }: {
@@ -132,9 +136,13 @@ function DiffFileCollapseToggle({
   fileKey: string;
   collapsed: boolean;
   unavailable: boolean;
+  requestIndex: number | undefined;
+  onRequest: (index: number) => void;
   iconClassName: string;
   onToggle: (fileKey: string) => void;
 }) {
+  const loading = unavailable && !collapsed;
+  const showLoading = useDelayedStatus(fileKey, loading ? true : null);
   return (
     <Tooltip>
       <TooltipTrigger
@@ -145,18 +153,23 @@ function DiffFileCollapseToggle({
             className="-ms-0.5"
             aria-label={collapsed ? `Expand ${filePath}` : `Collapse ${filePath}`}
             aria-expanded={!collapsed}
-            disabled={unavailable}
+            aria-busy={loading}
             onClick={(event) => {
               event.stopPropagation();
+              if (unavailable && collapsed && requestIndex !== undefined) onRequest(requestIndex);
               onToggle(fileKey);
             }}
           />
         }
       >
-        <MorphIcon
-          className={cn("size-4", iconClassName)}
-          icon={collapsed ? ChevronRight : ChevronDown}
-        />
+        {loading && showLoading ? (
+          <Spinner size="md" />
+        ) : (
+          <MorphIcon
+            className={cn("size-4", iconClassName)}
+            icon={collapsed ? ChevronRight : ChevronDown}
+          />
+        )}
       </TooltipTrigger>
       <TooltipPopup side="top">{collapsed ? "Expand diff" : "Collapse diff"}</TooltipPopup>
     </Tooltip>
@@ -474,7 +487,7 @@ export default function DiffPanel({
     fileStates,
     retry,
     requestFile,
-    readyFilePaths,
+    requestedFilePaths,
     renderableFiles,
     settledFileCount,
     loadNextFiles,
@@ -508,8 +521,14 @@ export default function DiffPanel({
 
   const isRefreshingDiff = branchDiffPreview.isPending || areFilePatchesPending;
   const renderableFileEntries = useMemo(
-    () => renderableFiles.map(getCachedFileEntry),
-    [renderableFiles],
+    () =>
+      renderableFiles.map((fileDiff) => {
+        const entry = getCachedFileEntry(fileDiff);
+        // A pending patch does not yet know the change type. Keep its key stable
+        // when the patch arrives so expand/collapse state covers unloaded files too.
+        return lazySource ? { ...entry, fileKey: `lazy:${resolveFileDiffPath(fileDiff)}` } : entry;
+      }),
+    [renderableFiles, lazySource],
   );
   const defaultCollapsedDiffFileKeys = useMemo(
     () =>
@@ -518,24 +537,39 @@ export default function DiffPanel({
         : EMPTY_COLLAPSED_DIFF_FILE_KEYS,
     [renderableFileEntries, settings.diffFilesCollapsed],
   );
+  const fileIndicesByKey = useMemo(
+    () => new Map(renderableFileEntries.map(({ fileKey }, index) => [fileKey, index])),
+    [renderableFileEntries],
+  );
   const collapsedDiffFileKeys =
     collapsedDiffFiles.scopeKey === collapseScopeKey
       ? collapsedDiffFiles.fileKeys
       : defaultCollapsedDiffFileKeys;
+  const unrequestedExpandedFileCount = lazySource
+    ? renderableFileEntries.filter(
+        ({ fileDiff, fileKey }) =>
+          !collapsedDiffFileKeys.has(fileKey) &&
+          !requestedFilePaths.has(resolveFileDiffPath(fileDiff)),
+      ).length
+    : 0;
   const renderLoadingBoundary = useCallback(
     () =>
-      settledFileCount < renderableFiles.length ? (
-        <DiffFileLoadingBoundary
-          load={loadNextFiles}
-          count={renderableFiles.length - settledFileCount}
-        />
+      unrequestedExpandedFileCount > 0 ? (
+        <DiffFileLoadingBoundary load={loadNextFiles} count={unrequestedExpandedFileCount} />
       ) : null,
-    [settledFileCount, renderableFiles.length, loadNextFiles],
+    [unrequestedExpandedFileCount, loadNextFiles],
   );
   const codeViewFiles = useMemo(
     () =>
       renderableFileEntries
-        .filter(({ fileDiff }) => !lazySource || readyFilePaths.has(resolveFileDiffPath(fileDiff)))
+        // Summary data is sufficient for collapsed headers. Only expanded files
+        // wait for a patch, with requested rows kept mounted while it arrives.
+        .filter(
+          ({ fileDiff, fileKey }) =>
+            !lazySource ||
+            collapsedDiffFileKeys.has(fileKey) ||
+            requestedFilePaths.has(resolveFileDiffPath(fileDiff)),
+        )
         .map(({ fileDiff, fileKey, fileVersion }) => {
           return {
             fileDiff,
@@ -548,7 +582,7 @@ export default function DiffPanel({
               fileDiff.cacheKey?.endsWith(":pending") === true,
           };
         }),
-    [collapsedDiffFileKeys, renderableFileEntries, lazySource, readyFilePaths],
+    [collapsedDiffFileKeys, renderableFileEntries, lazySource, requestedFilePaths],
   );
   const diffFileKeys = useMemo(
     () => renderableFileEntries.map((file) => file.fileKey),
@@ -1129,7 +1163,16 @@ export default function DiffPanel({
                     const file = codeViewFiles.find(
                       (candidate) => candidate.filePath === headerFilePath,
                     );
-                    if (file) toggleDiffFileCollapsed(file.fileKey);
+                    if (file) {
+                      const index = fileIndicesByKey.get(file.fileKey);
+                      if (
+                        file.fileDiff.cacheKey?.endsWith(":pending") &&
+                        collapsedDiffFileKeys.has(file.fileKey) &&
+                        index !== undefined
+                      )
+                        requestFile(index);
+                      toggleDiffFileCollapsed(file.fileKey);
+                    }
                   }}
                   onContextMenuCapture={(event) => {
                     const composedPath = event.nativeEvent.composedPath?.() ?? [];
@@ -1196,8 +1239,10 @@ export default function DiffPanel({
                         <DiffFileCollapseToggle
                           filePath={resolveFileDiffPath(fileDiff)}
                           fileKey={fileKey}
-                          collapsed={unavailable || collapsedDiffFileKeys.has(fileKey)}
+                          collapsed={collapsedDiffFileKeys.has(fileKey)}
                           unavailable={unavailable}
+                          requestIndex={fileIndicesByKey.get(fileKey)}
+                          onRequest={requestFile}
                           iconClassName={getDiffCollapseIconClassName(fileDiff)}
                           onToggle={toggleDiffFileCollapsed}
                         />

@@ -107,6 +107,7 @@ export function blockedAssetUrlState(
     resource === null ||
     fileAccess.canReadFiles ||
     (resource._tag !== "workspace-file" &&
+      resource._tag !== "lfs-image" &&
       resource._tag !== "media-file" &&
       resource._tag !== "draft-workspace-file")
   ) {

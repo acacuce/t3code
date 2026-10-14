@@ -12,6 +12,11 @@ import { ToolActivityNativeAppReference } from "./providerRuntime.ts";
 const ASSET_PATH_MAX_LENGTH = 1024;
 
 export const AssetResource = Schema.Union([
+  Schema.TaggedStruct("lfs-image", {
+    threadId: ThreadId,
+    oid: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+    path: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
+  }),
   Schema.TaggedStruct("workspace-file", {
     threadId: ThreadId,
     path: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),

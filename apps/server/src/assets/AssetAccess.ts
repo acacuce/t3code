@@ -31,6 +31,7 @@ import {
   type ImageDimensions,
 } from "@t3tools/shared/imageDimensions";
 import { githubMediaFetchUrl, githubMediaFileName } from "@t3tools/shared/githubMedia";
+import { LFS_IMAGE_MAX_BYTES, LFS_IMAGE_MAX_PIXELS } from "@t3tools/shared/gitLfs";
 import { MCP_APP_MAX_HTML_BYTES } from "@t3tools/shared/mcpApp";
 import {
   isProjectFaviconPath,
@@ -65,6 +66,7 @@ import * as NativeAppIconResolver from "./NativeAppIconResolver.ts";
 import { extractIcnsPng } from "./icns.ts";
 import { openMediaFile, readMediaFileHeader, type OpenMediaFile } from "./MediaFile.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as LfsObjects from "./LfsObjects.ts";
 
 export const ASSET_ROUTE_PREFIX = "/api/assets";
 
@@ -115,6 +117,7 @@ const AssetClaimsSchema = Schema.Union([
     version: Schema.Literal(1),
     kind: Schema.Literal("media-file-exact"),
     filePath: Schema.String,
+    fileName: Schema.optionalKey(Schema.String),
     device: Schema.String,
     inode: Schema.String,
     expiresAt: Schema.Number,
@@ -517,6 +520,56 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
   let imageDimensions: ImageDimensions | null = null;
 
   switch (input.resource._tag) {
+    case "lfs-image": {
+      const resource = input.resource;
+      if (!input.workspaceRoot) {
+        return yield* new AssetWorkspaceContextNotFoundError({ resource });
+      }
+      if (!isWorkspaceImagePreviewPath(resource.path)) {
+        return yield* new AssetPreviewTypeValidationError({ resource });
+      }
+      const objects = yield* LfsObjects.LfsObjects;
+      const objectPath = yield* objects.localPath(input.workspaceRoot, resource.oid);
+      if (!objectPath) {
+        return yield* new AssetWorkspaceAssetNotFoundError({ resource });
+      }
+      const canonicalFile = yield* resolveCanonicalFile(objectPath).pipe(
+        Effect.mapError((cause) => new AssetWorkspaceAssetInspectionError({ resource, cause })),
+      );
+      if (!canonicalFile) return yield* new AssetWorkspaceAssetNotFoundError({ resource });
+      const opened = yield* openMediaFile(canonicalFile).pipe(
+        Effect.flatMap((file) =>
+          file === null || file.info.size > BigInt(LFS_IMAGE_MAX_BYTES)
+            ? Effect.succeed(null)
+            : Effect.map(readImageDimensionsFromOpenFile(canonicalFile, file), (dimensions) => ({
+                device: file.info.dev.toString(),
+                inode: file.info.ino.toString(),
+                dimensions,
+              })),
+        ),
+        Effect.scoped,
+        Effect.mapError((cause) => new AssetWorkspaceAssetInspectionError({ resource, cause })),
+      );
+      if (
+        !opened ||
+        (opened.dimensions &&
+          opened.dimensions.width * opened.dimensions.height > LFS_IMAGE_MAX_PIXELS)
+      ) {
+        return yield* new AssetPreviewTypeValidationError({ resource });
+      }
+      fileName = path.basename(resource.path);
+      imageDimensions = opened.dimensions;
+      claims = {
+        version: 1,
+        kind: "media-file-exact",
+        filePath: canonicalFile,
+        fileName,
+        device: opened.device,
+        inode: opened.inode,
+        expiresAt,
+      };
+      break;
+    }
     case "media-file": {
       let requestedPath = expandHomePath(input.resource.path, yield* HostProcess.HomeDirectory);
       if (!path.isAbsolute(requestedPath)) {
@@ -938,7 +991,7 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   if (decodedPath === null) return null;
   const path = yield* Path.Path;
   if (claims.kind === "media-file-exact") {
-    if (decodedPath !== path.basename(claims.filePath)) return null;
+    if (decodedPath !== (claims.fileName ?? path.basename(claims.filePath))) return null;
     const canonicalFile = yield* resolveCanonicalFile(claims.filePath).pipe(
       Effect.tapError((cause) =>
         Effect.logError("Failed to resolve canonical media path.", {
@@ -949,7 +1002,9 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
       Effect.orElseSucceed(() => null),
     );
     if (canonicalFile !== claims.filePath) return null;
-    const mimeType = hostPreviewMimeTypeFromExtension(path.extname(canonicalFile));
+    const mimeType = hostPreviewMimeTypeFromExtension(
+      path.extname(claims.fileName ?? canonicalFile),
+    );
     if (!mimeType) return null;
     const file = yield* openMediaFile(canonicalFile, claims).pipe(
       Effect.tapError((cause) =>

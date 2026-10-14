@@ -38,6 +38,9 @@ import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as GitHubCredentials from "@t3tools/source-control-github/server/GitHubCredentials";
 import { githubMediaResponse } from "./GitHubMediaFetch.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as ProcessRunner from "../processRunner.ts";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as LfsObjects from "./LfsObjects.ts";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof NodeFSP>();
@@ -101,6 +104,7 @@ const oversizedScreenshotItem = {
 
 const layerTest = Layer.mergeAll(
   NodeHttpPlatform.layer,
+  Layer.mock(LfsObjects.LfsObjects)({}),
   Layer.mock(Orchestrator.OrchestratorV2)({
     getTurnItem: ({ itemId }) =>
       Effect.succeed(
@@ -122,6 +126,76 @@ const layerTest = Layer.mergeAll(
 ).pipe(Layer.provideMerge(NodeServices.layer));
 
 describe("AssetAccess", () => {
+  it.effect(
+    "serves the selected cached LFS image with its original MIME type, without reading the working copy",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-lfs-image-" });
+        const mediaDir = path.join(root, "custom lfs storage", "objects");
+        const oid = "ab".repeat(32);
+        const objectPath = path.join(mediaDir, "ab", "ab", oid);
+        yield* fs.makeDirectory(path.dirname(objectPath), { recursive: true });
+        yield* fs.writeFile(objectPath, screenshotPng);
+        yield* fs.writeFileString(path.join(root, "image.png"), "unrelated working copy");
+        let lookups = 0;
+        const lfsLayer = LfsObjects.layer.pipe(
+          Layer.provide(
+            Layer.succeed(
+              ProcessRunner.ProcessRunner,
+              ProcessRunner.ProcessRunner.of({
+                run: () =>
+                  Effect.sync(() => {
+                    lookups++;
+                    return {
+                      stdout: `LocalMediaDir=${mediaDir}\n`,
+                      stderr: "",
+                      code: ChildProcessSpawner.ExitCode(0),
+                      timedOut: false,
+                      stdoutTruncated: false,
+                      stderrTruncated: false,
+                      stdoutInvalidUtf8: false,
+                      stderrInvalidUtf8: false,
+                    };
+                  }),
+              }),
+            ),
+          ),
+        );
+        const issue = issueAssetUrl({
+          resource: {
+            _tag: "lfs-image",
+            threadId: ThreadId.make("thread-1"),
+            oid,
+            path: "image.png",
+          },
+          workspaceRoot: root,
+        });
+        const [result] = yield* Effect.all([issue, issue], { concurrency: 2 }).pipe(
+          Effect.provide(lfsLayer),
+        );
+        expect(lookups).toBe(1);
+        const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+        const separator = suffix.indexOf("/");
+        const asset = yield* resolveAsset(suffix.slice(0, separator), suffix.slice(separator + 1));
+        expect(asset).toMatchObject({
+          kind: "file",
+          path: yield* fs.realPath(objectPath),
+          mimeType: "image/png",
+        });
+        if (asset?.kind !== "file") throw new Error("Expected a resolved LFS image");
+        const response = HttpServerResponse.toWeb(yield* assetFileResponse(asset));
+        expect(response.headers.get("content-type")).toBe("image/png");
+        expect(new Uint8Array(yield* Effect.promise(() => response.arrayBuffer()))).toEqual(
+          screenshotPng,
+        );
+        yield* fs.remove(objectPath);
+        expect(
+          yield* resolveAsset(suffix.slice(0, separator), suffix.slice(separator + 1)),
+        ).toBeNull();
+      }).pipe(Effect.provide(layerTest)),
+  );
   describe("readMcpAppHtml", () => {
     it.effect("accepts snapshots at the stored HTML byte limit", () =>
       Effect.gen(function* () {

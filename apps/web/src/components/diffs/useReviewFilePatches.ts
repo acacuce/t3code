@@ -168,6 +168,22 @@ export function useReviewFilePatches({
     },
     [registry],
   );
+  const pendingFiles = useMemo(
+    () =>
+      files.map((file): FileDiffMetadata => ({
+        name: file.path,
+        ...(file.previousPath ? { prevName: file.previousPath } : {}),
+        type: file.previousPath ? "rename-changed" : "change",
+        hunks: [],
+        additionLines: [],
+        deletionLines: [],
+        splitLineCount: 0,
+        unifiedLineCount: 0,
+        isPartial: true,
+        cacheKey: `${scope}:${file.path}:pending`,
+      })),
+    [files, scope],
+  );
   const renderableFiles = useMemo(
     () =>
       source
@@ -179,23 +195,12 @@ export function useReviewFilePatches({
               );
               if (loaded) return loaded;
             }
-            return {
-              name: file.path,
-              ...(file.previousPath ? { prevName: file.previousPath } : {}),
-              type: file.previousPath ? "rename-changed" : "change",
-              hunks: [],
-              additionLines: [],
-              deletionLines: [],
-              splitLineCount: 0,
-              unifiedLineCount: 0,
-              isPartial: true,
-              cacheKey: `${scope}:${file.path}:pending`,
-            };
+            return pendingFiles[index]!;
           })
         : (preview?.kind === "files" ? preview.files : []).toSorted((a, b) =>
             filePathCollator.compare(resolveFileDiffPath(a), resolveFileDiffPath(b)),
           ),
-    [source, files, patches, scope, preview],
+    [source, files, patches, pendingFiles, preview],
   );
   const fileStates = useMemo(
     () =>
@@ -219,17 +224,9 @@ export function useReviewFilePatches({
       ),
     [files, patches],
   );
-  const readyFilePaths = useMemo(
-    () =>
-      new Set(
-        files
-          .filter((_, index) => {
-            const patch = patches.get(index);
-            return patch && patch._tag !== "Initial";
-          })
-          .map((file) => file.path),
-      ),
-    [files, patches],
+  const requestedFilePaths = useMemo(
+    () => new Set(queries.map(({ index }) => files[index]!.path)),
+    [queries, files],
   );
   return {
     scope,
@@ -237,7 +234,7 @@ export function useReviewFilePatches({
     isPending: [...patches.values()].some((patch) => patch._tag === "Initial" || patch.waiting),
     retry,
     requestFile,
-    readyFilePaths,
+    requestedFilePaths,
     renderableFiles,
     settledFileCount,
     loadNextFiles,

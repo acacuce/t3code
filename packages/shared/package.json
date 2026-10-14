@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./gitLfs": {
+      "types": "./src/gitLfs.ts",
+      "import": "./src/gitLfs.ts"
+    },
     "./githubMarkdownLinks": {
       "types": "./src/githubMarkdownLinks.ts",
       "import": "./src/githubMarkdownLinks.ts"

@@ -260,6 +260,7 @@ const requiredScopesForRpcCall = (
     const { resource } = Schema.decodeUnknownSync(AssetCreateUrlInput)(payload);
     return [
       resource._tag === "workspace-file" ||
+      resource._tag === "lfs-image" ||
       resource._tag === "media-file" ||
       resource._tag === "draft-workspace-file"
         ? AuthFilesystemReadScope

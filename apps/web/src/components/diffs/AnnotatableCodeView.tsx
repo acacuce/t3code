@@ -8,6 +8,7 @@ import type {
 } from "@pierre/diffs";
 import type { CodeViewHandle } from "@pierre/diffs/react";
 import type { ScopedThreadRef } from "@t3tools/contracts";
+import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import { useCallback, useMemo, useState, type ReactNode, type Ref } from "react";
 
 import { type DraftId, useComposerDraftStore } from "~/composerDraftStore";
@@ -21,6 +22,8 @@ import {
 import { nextFileCommentId } from "../files/fileCommentAnnotations";
 import { DiffCommentAnnotation } from "./DiffCommentAnnotation";
 import { StyledDiffCodeView, type StyledDiffCodeViewOptions } from "./StyledDiffCodeView";
+import { LfsDiffImage, lfsImageSide, type LfsImageSide } from "./LfsDiffImage";
+import { DiffImageCacheProvider } from "./DiffImageCacheProvider";
 
 interface DiffCommentAnnotationEntry {
   id: string;
@@ -32,6 +35,7 @@ interface DiffCommentAnnotationEntry {
 
 interface DiffCommentAnnotationGroup {
   entries: DiffCommentAnnotationEntry[];
+  image?: LfsImageSide;
 }
 
 type DiffCommentLineAnnotation = DiffLineAnnotation<DiffCommentAnnotationGroup>;
@@ -156,8 +160,39 @@ export function AnnotatableCodeView({
               text: comment.text,
             });
           }, []);
-        const annotations =
+        const annotations: DiffCommentLineAnnotation[] =
           draft?.fileKey === fileKey ? [...persisted, draft.annotation] : persisted;
+
+        if (
+          !collapsed &&
+          typeof composerDraftTarget !== "string" &&
+          isWorkspaceImagePreviewPath(filePath)
+        ) {
+          for (const [side, lines, name, label] of [
+            ["deletions", fileDiff.deletionLines, fileDiff.prevName ?? filePath, "Before"],
+            ["additions", fileDiff.additionLines, filePath, "After"],
+          ] as const) {
+            const image = lfsImageSide(lines, name, label);
+            if (!image) continue;
+            const existing = annotations.findIndex(
+              (annotation) => annotation.side === side && annotation.lineNumber === 0,
+            );
+            if (existing < 0) {
+              annotations.push({
+                side,
+                // The preview belongs to the file, so virtualizing pointer lines cannot hide it.
+                lineNumber: 0,
+                metadata: { entries: [], image },
+              });
+            } else {
+              const annotation = annotations[existing]!;
+              annotations[existing] = {
+                ...annotation,
+                metadata: { ...annotation.metadata, image },
+              };
+            }
+          }
+        }
         return {
           id: fileKey,
           type: "diff",
@@ -166,16 +201,17 @@ export function AnnotatableCodeView({
           collapsed,
           version: fnv1a32(
             `${fileVersion}:${collapsed ? "1" : "0"}:${annotations
-              .flatMap((annotation) =>
-                annotation.metadata.entries.map(
-                  (entry) => `${entry.id}:${entry.rangeLabel}:${entry.text}`,
-                ),
+              .map(
+                ({ side, lineNumber, metadata }) =>
+                  `${side}:${lineNumber}:${metadata.image?.oid ?? ""}:${metadata.entries
+                    .map((entry) => `${entry.id}:${entry.rangeLabel}:${entry.text}`)
+                    .join(":")}`,
               )
               .join(":")}`,
           ),
         };
       }),
-    [draft, files, reviewComments, sectionId],
+    [draft, files, reviewComments, sectionId, composerDraftTarget],
   );
 
   const removeEntry = useCallback(
@@ -250,57 +286,67 @@ export function AnnotatableCodeView({
 
   const hasOpenComment = draft !== null;
   return (
-    <StyledDiffCodeView<DiffCommentAnnotationGroup>
-      key={codeViewKey}
-      {...(viewerRef ? { viewerRef } : {})}
-      {...(className ? { className } : {})}
-      {...(unsafeCSSExtra ? { unsafeCSSExtra } : {})}
-      {...(renderHeaderMetadata
-        ? {
-            renderHeaderMetadata: (item: CodeViewItem<DiffCommentAnnotationGroup>) =>
-              item.type === "diff" ? renderHeaderMetadata(item.fileDiff) : null,
-          }
-        : {})}
-      {...(renderCodeViewFooter ? { renderCodeViewFooter } : {})}
-      items={items}
-      selectedLines={selectedLines}
-      onSelectedLinesChange={setSelectedLines}
-      onRevealSearchMatch={(item) => onRevealSearchMatch(item.id)}
-      options={{
-        ...options,
-        enableGutterUtility: !hasOpenComment,
-        enableLineSelection: !hasOpenComment,
-        onGutterUtilityClick: beginComment,
-      }}
-      renderHeaderFilenameSuffix={(item) =>
-        item.type === "diff" ? renderHeaderFilenameSuffix(item.fileDiff) : null
-      }
-      renderHeaderPrefix={(item) =>
-        item.type === "diff"
-          ? renderHeaderPrefix(item.fileDiff, item.id, item.collapsed === true)
-          : null
-      }
-      renderAnnotation={(annotation) => {
-        const hasDraft = annotation.metadata.entries.some((entry) => entry.kind === "draft");
-        return (
-          <div
-            className={hasDraft ? "py-1" : "divide-y divide-border/30 border-y border-border/30"}
-          >
-            {annotation.metadata.entries.map((entry) => (
-              <DiffCommentAnnotation
-                key={entry.id}
-                kind={entry.kind}
-                rangeLabel={entry.rangeLabel}
-                text={entry.kind === "draft" ? draftText : entry.text}
-                onTextChange={setDraftText}
-                onCancel={() => removeEntry(entry.id)}
-                onComment={(text) => submitEntry(entry.id, text)}
-                onDelete={() => removeEntry(entry.id)}
-              />
-            ))}
-          </div>
-        );
-      }}
-    />
+    <DiffImageCacheProvider key={codeViewKey}>
+      <StyledDiffCodeView<DiffCommentAnnotationGroup>
+        {...(viewerRef ? { viewerRef } : {})}
+        {...(className ? { className } : {})}
+        {...(unsafeCSSExtra ? { unsafeCSSExtra } : {})}
+        {...(renderHeaderMetadata
+          ? {
+              renderHeaderMetadata: (item: CodeViewItem<DiffCommentAnnotationGroup>) =>
+                item.type === "diff" ? renderHeaderMetadata(item.fileDiff) : null,
+            }
+          : {})}
+        {...(renderCodeViewFooter ? { renderCodeViewFooter } : {})}
+        items={items}
+        selectedLines={selectedLines}
+        onSelectedLinesChange={setSelectedLines}
+        onRevealSearchMatch={(item) => onRevealSearchMatch(item.id)}
+        options={{
+          ...options,
+          enableGutterUtility: !hasOpenComment,
+          enableLineSelection: !hasOpenComment,
+          onGutterUtilityClick: beginComment,
+        }}
+        renderHeaderFilenameSuffix={(item) =>
+          item.type === "diff" ? renderHeaderFilenameSuffix(item.fileDiff) : null
+        }
+        renderHeaderPrefix={(item) =>
+          item.type === "diff"
+            ? renderHeaderPrefix(item.fileDiff, item.id, item.collapsed === true)
+            : null
+        }
+        renderAnnotation={(annotation) => {
+          const hasDraft = annotation.metadata.entries.some((entry) => entry.kind === "draft");
+          return (
+            <>
+              {annotation.metadata.image && typeof composerDraftTarget !== "string" ? (
+                <LfsDiffImage image={annotation.metadata.image} threadRef={composerDraftTarget} />
+              ) : null}
+              {annotation.metadata.entries.length > 0 ? (
+                <div
+                  className={
+                    hasDraft ? "py-1" : "divide-y divide-border/30 border-y border-border/30"
+                  }
+                >
+                  {annotation.metadata.entries.map((entry) => (
+                    <DiffCommentAnnotation
+                      key={entry.id}
+                      kind={entry.kind}
+                      rangeLabel={entry.rangeLabel}
+                      text={entry.kind === "draft" ? draftText : entry.text}
+                      onTextChange={setDraftText}
+                      onCancel={() => removeEntry(entry.id)}
+                      onComment={(text) => submitEntry(entry.id, text)}
+                      onDelete={() => removeEntry(entry.id)}
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </>
+          );
+        }}
+      />
+    </DiffImageCacheProvider>
   );
 }

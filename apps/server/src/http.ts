@@ -74,6 +74,8 @@ const isSafeDownloadMimeType = (mimeType: string): boolean =>
   !/(?:^text\/html$|\/xml(?:$|-)|\+xml$)/i.test(mimeType.trim().toLowerCase());
 const isSafeInlineMediaMimeType = (mimeType: string): boolean =>
   DOWNLOAD_MIME_TYPE_PATTERN.test(mimeType) && /^(?:audio|video)\//i.test(mimeType);
+const isSafeInlineImageMimeType = (mimeType: string): boolean =>
+  /^image\/(?:png|jpeg|gif|webp|avif|x-icon|vnd\.microsoft\.icon|svg\+xml)$/i.test(mimeType);
 const isSafeInlineDocumentMimeType = (mimeType: string): boolean =>
   mimeType.toLowerCase() === "application/pdf" || mimeType.toLowerCase() === "text/html";
 
@@ -117,7 +119,8 @@ export function assetResponseHeaders(
               ? options.mimeType
               : "application/octet-stream",
         }
-      : inlineMimeType !== undefined && isSafeInlineMediaMimeType(inlineMimeType)
+      : inlineMimeType !== undefined &&
+          (isSafeInlineMediaMimeType(inlineMimeType) || isSafeInlineImageMimeType(inlineMimeType))
         ? { "Content-Type": inlineMimeType }
         : inlineMimeType !== undefined && isSafeInlineDocumentMimeType(inlineMimeType)
           ? {
@@ -135,7 +138,7 @@ export function assetResponseHeaders(
                 "Content-Security-Policy": HTML_CONTENT_SECURITY_POLICY,
               }
             : {}),
-    ...(!options?.download && lowerPath.endsWith(".svg")
+    ...(!options?.download && (lowerPath.endsWith(".svg") || inlineMimeType === "image/svg+xml")
       ? { "Content-Security-Policy": SVG_CONTENT_SECURITY_POLICY }
       : {}),
   };
