@@ -2,7 +2,6 @@ import { useEffect, useRef } from "react";
 import { useDelayedStatus } from "~/hooks/useDelayedStatus";
 import { DiffFileHeaderSkeleton } from "../DiffPanelShell";
 
-/** Load the next batch before the reader reaches the end of the current files. */
 export function DiffFileLoadingBoundary({ load, count }: { load: () => void; count: number }) {
   const ref = useRef<HTMLDivElement>(null);
   const showLoading = useDelayedStatus("diff-file-loading", true);
