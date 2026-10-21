@@ -1,7 +1,8 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { MISSING_FILE_ACCESS_MESSAGE } from "@t3tools/client-runtime/state/assets";
 import { LFS_IMAGE_MAX_BYTES, parseLfsPointer } from "@t3tools/shared/gitLfs";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useStableCallback } from "~/hooks/useStableCallback";
 
 import { useAssetUrlRefresh, useAssetUrlState } from "~/assets/assetUrls";
 import { Button } from "~/components/ui/button";
@@ -63,15 +64,12 @@ function LfsImageContent({
   image: LfsImageSide;
   threadRef: ScopedThreadRef;
 }) {
-  const resource = useMemo(
-    () => ({
-      _tag: "lfs-image" as const,
-      threadId: threadRef.threadId,
-      oid: image.oid,
-      path: image.path,
-    }),
-    [threadRef.threadId, image.oid, image.path],
-  );
+  const resource = {
+    _tag: "lfs-image" as const,
+    threadId: threadRef.threadId,
+    oid: image.oid,
+    path: image.path,
+  };
   const asset = useAssetUrlState(threadRef.environmentId, resource);
   const refresh = useAssetUrlRefresh(threadRef.environmentId, resource);
   const cache = useDiffImageCache();
@@ -97,13 +95,10 @@ function LfsImageContent({
   }, [cache, cacheKey, url, image.size, width, height, retrying]);
 
   const blobUrl = state.status === "ready" ? state.url : null;
-  const loaded = useCallback(
-    (element: HTMLImageElement) => {
-      cache.decoded(cacheKey, element.naturalWidth, element.naturalHeight);
-      setDecodedUrl(element.src);
-    },
-    [cache, cacheKey],
-  );
+  const loaded = useStableCallback((element: HTMLImageElement) => {
+    cache.decoded(cacheKey, element.naturalWidth, element.naturalHeight);
+    setDecodedUrl(element.src);
+  });
   // A recycled slot can attach an already-loaded image without another load event.
   useEffect(() => {
     const element = imageRef.current;

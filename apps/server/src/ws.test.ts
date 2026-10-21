@@ -103,6 +103,7 @@ import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as OrchestrationEventStore from "./persistence/OrchestrationEventStore.ts";
 import * as SqlitePersistence from "./persistence/Sqlite.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
+import * as LfsObjects from "./assets/LfsObjects.ts";
 import * as ProjectEnrichment from "./project/ProjectEnrichmentService.ts";
 import * as ProjectService from "./project/ProjectService.ts";
 import {
@@ -390,6 +391,7 @@ it.effect(
       const responses = yield* Queue.unbounded<ServerConfigStreamEvent>();
       const configRpcServices = Layer.mergeAll(
         layerUnusedConfigRpcServices,
+        Layer.mock(LfsObjects.LfsObjects)({}),
         Layer.mock(ExternalLauncher.ExternalLauncher)({
           resolveAvailableEditors: () =>
             Deferred.succeed(discoveryStarted, undefined).pipe(
